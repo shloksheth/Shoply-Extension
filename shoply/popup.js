@@ -33,6 +33,7 @@ let state = {
 
 let dragTabIndex = null;
 let manageDragIndex = null;
+let expandedManageLists = new Set();
 
 // ---------- Elements ----------
 
@@ -46,6 +47,7 @@ const el = {
   newListForm: document.getElementById("newListForm"),
   newListName: document.getElementById("newListName"),
   emojiRow: document.getElementById("emojiRow"),
+  customEmojiInput: document.getElementById("customEmojiInput"),
   cancelNewList: document.getElementById("cancelNewList"),
   listToolbar: document.getElementById("listToolbar"),
   activeListEmoji: document.getElementById("activeListEmoji"),
@@ -66,7 +68,8 @@ const el = {
   downloadDataBtn: document.getElementById("downloadDataBtn"),
   importDataBtn: document.getElementById("importDataBtn"),
   importFileInput: document.getElementById("importFileInput"),
-  importStatus: document.getElementById("importStatus")
+  importStatus: document.getElementById("importStatus"),
+  itemContextMenu: document.getElementById("itemContextMenu")
 };
 
 // ---------- Init ----------
@@ -424,6 +427,7 @@ function paintThemeSwatchPreviews() {
 // ---------- Settings panel ----------
 
 function openSettingsPanel() {
+  hideItemContextMenu();
   renderThemeRow();
   paintThemeSwatchPreviews();
   renderManageLists();
@@ -440,6 +444,9 @@ function renderManageLists() {
   el.manageLists.innerHTML = "";
   state.lists.forEach((list, index) => {
     el.manageLists.appendChild(buildManageRow(list, index));
+    if (expandedManageLists.has(list.id)) {
+      el.manageLists.appendChild(buildManageItemsPanel(list));
+    }
   });
 }
 
@@ -487,6 +494,22 @@ function buildManageRow(list, index) {
   count.textContent = list.items.length;
   row.appendChild(count);
 
+  const expandBtn = document.createElement("button");
+  expandBtn.type = "button";
+  expandBtn.className = "manage-expand-btn" + (expandedManageLists.has(list.id) ? " open" : "");
+  expandBtn.innerHTML = "▾";
+  expandBtn.title = "Show items";
+  expandBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (expandedManageLists.has(list.id)) {
+      expandedManageLists.delete(list.id);
+    } else {
+      expandedManageLists.add(list.id);
+    }
+    renderManageLists();
+  });
+  row.appendChild(expandBtn);
+
   const deleteBtn = document.createElement("button");
   deleteBtn.type = "button";
   deleteBtn.className = "manage-delete-btn";
@@ -531,6 +554,60 @@ function buildManageRow(list, index) {
   return row;
 }
 
+function buildManageItemsPanel(list) {
+  const panel = document.createElement("div");
+  panel.className = "manage-items-panel";
+
+  if (list.items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "manage-items-empty";
+    empty.textContent = "No items in this list yet.";
+    panel.appendChild(empty);
+    return panel;
+  }
+
+  list.items.forEach((item) => {
+    const itemRow = document.createElement("div");
+    itemRow.className = "manage-item-row";
+
+    const name = document.createElement("span");
+    name.className = "manage-item-name";
+    name.textContent = item.name;
+    name.title = item.name;
+    itemRow.appendChild(name);
+
+    const select = document.createElement("select");
+    select.className = "manage-item-select";
+
+    const placeholder = document.createElement("option");
+    placeholder.textContent = "Move to…";
+    placeholder.value = "";
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    select.appendChild(placeholder);
+
+    state.lists
+      .filter((l) => l.id !== list.id)
+      .forEach((l) => {
+        const opt = document.createElement("option");
+        opt.value = l.id;
+        opt.textContent = `${l.emoji} ${l.name}`;
+        select.appendChild(opt);
+      });
+
+    select.addEventListener("change", async () => {
+      const destId = select.value;
+      if (!destId) return;
+      await moveItem(list.id, item.id, destId);
+    });
+    itemRow.appendChild(select);
+
+    panel.appendChild(itemRow);
+  });
+
+  return panel;
+}
+
 function toggleEmojiPicker(row, list) {
   const existing = row.nextElementSibling;
   if (existing && existing.classList.contains("emoji-picker-popover")) {
@@ -541,6 +618,9 @@ function toggleEmojiPicker(row, list) {
 
   const popover = document.createElement("div");
   popover.className = "emoji-picker-popover";
+
+  const grid = document.createElement("div");
+  grid.className = "emoji-picker-grid";
   EMOJI_OPTIONS.forEach((emoji) => {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -554,8 +634,30 @@ function toggleEmojiPicker(row, list) {
       renderToolbar();
       populateAddSelect();
     });
-    popover.appendChild(btn);
+    grid.appendChild(btn);
   });
+  popover.appendChild(grid);
+
+  const customRow = document.createElement("div");
+  customRow.className = "emoji-custom-row";
+  const customInput = document.createElement("input");
+  customInput.type = "text";
+  customInput.className = "emoji-custom-input";
+  customInput.placeholder = "Or type any emoji…";
+  customInput.maxLength = 8;
+  customInput.addEventListener("change", async () => {
+    const typed = customInput.value.trim();
+    if (!typed) return;
+    list.emoji = typed;
+    await persist();
+    renderManageLists();
+    renderTabs();
+    renderToolbar();
+    populateAddSelect();
+  });
+  customRow.appendChild(customInput);
+  popover.appendChild(customRow);
+
   row.after(popover);
 }
 
@@ -749,10 +851,22 @@ function buildEmojiRow() {
       state.selectedEmoji = emoji;
       [...el.emojiRow.children].forEach((c) => c.classList.remove("selected"));
       btn.classList.add("selected");
+      el.customEmojiInput.value = "";
     });
     el.emojiRow.appendChild(btn);
   });
   state.selectedEmoji = EMOJI_OPTIONS[0];
+
+  el.customEmojiInput.addEventListener("input", () => {
+    const typed = el.customEmojiInput.value.trim();
+    if (typed) {
+      state.selectedEmoji = typed;
+      [...el.emojiRow.children].forEach((c) => c.classList.remove("selected"));
+    } else {
+      state.selectedEmoji = EMOJI_OPTIONS[0];
+      el.emojiRow.children[0].classList.add("selected");
+    }
+  });
 }
 
 function toggleNewListForm(forceHide) {
@@ -760,6 +874,9 @@ function toggleNewListForm(forceHide) {
   el.newListForm.classList.toggle("hidden", shouldHide);
   if (!shouldHide) {
     el.newListName.value = "";
+    el.customEmojiInput.value = "";
+    state.selectedEmoji = EMOJI_OPTIONS[0];
+    [...el.emojiRow.children].forEach((c, idx) => c.classList.toggle("selected", idx === 0));
     el.newListName.focus();
   }
 }
@@ -818,6 +935,7 @@ function buildCard(item, listId) {
   const card = document.createElement("div");
   card.className = "product-card";
   card.addEventListener("click", () => chrome.tabs.create({ url: item.url }));
+  card.addEventListener("contextmenu", (e) => showItemContextMenu(e, listId, item));
 
   const punch = document.createElement("div");
   punch.className = "card-punch";
@@ -879,6 +997,7 @@ function buildRow(item, listId) {
   const row = document.createElement("div");
   row.className = "product-row";
   row.addEventListener("click", () => chrome.tabs.create({ url: item.url }));
+  row.addEventListener("contextmenu", (e) => showItemContextMenu(e, listId, item));
 
   const favicon = document.createElement("img");
   favicon.className = "row-favicon";
@@ -934,6 +1053,73 @@ async function removeItem(listId, itemId) {
   renderItems();
 }
 
+async function moveItem(fromListId, itemId, toListId) {
+  if (fromListId === toListId) return;
+  const fromList = state.lists.find((l) => l.id === fromListId);
+  const toList = state.lists.find((l) => l.id === toListId);
+  if (!fromList || !toList) return;
+  const idx = fromList.items.findIndex((it) => it.id === itemId);
+  if (idx === -1) return;
+  const [item] = fromList.items.splice(idx, 1);
+  toList.items.unshift(item);
+  await persist();
+  renderToolbar();
+  renderItems();
+  renderManageLists();
+}
+
+// ---------- Right-click "move to list" menu ----------
+
+function showItemContextMenu(e, listId, item) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const menu = el.itemContextMenu;
+  menu.innerHTML = "";
+
+  const label = document.createElement("div");
+  label.className = "context-menu-label";
+  label.textContent = "Move to…";
+  menu.appendChild(label);
+
+  const others = state.lists.filter((l) => l.id !== listId);
+  if (others.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "context-menu-empty";
+    empty.textContent = "No other lists yet";
+    menu.appendChild(empty);
+  } else {
+    others.forEach((list) => {
+      const opt = document.createElement("button");
+      opt.type = "button";
+      opt.className = "context-menu-item";
+      opt.textContent = `${list.emoji} ${list.name}`;
+      opt.addEventListener("click", async () => {
+        await moveItem(listId, item.id, list.id);
+        hideItemContextMenu();
+      });
+      menu.appendChild(opt);
+    });
+  }
+
+  menu.classList.remove("hidden");
+
+  // Position at the cursor, then clamp so it stays inside the popup window.
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    const maxLeft = Math.max(4, window.innerWidth - rect.width - 4);
+    const maxTop = Math.max(4, window.innerHeight - rect.height - 4);
+    menu.style.left = `${Math.min(e.clientX, maxLeft)}px`;
+    menu.style.top = `${Math.min(e.clientY, maxTop)}px`;
+  });
+}
+
+function hideItemContextMenu() {
+  el.itemContextMenu.classList.add("hidden");
+}
+
 async function deleteActiveList() {
   if (state.lists.length <= 1) return;
   const list = getActiveList();
@@ -981,6 +1167,29 @@ function wireEvents() {
   });
 
   wireTabsScrolling();
+  wireContextMenuDismissal();
+}
+
+function wireContextMenuDismissal() {
+  document.addEventListener("click", (e) => {
+    if (!el.itemContextMenu.classList.contains("hidden") && !el.itemContextMenu.contains(e.target)) {
+      hideItemContextMenu();
+    }
+  });
+  document.addEventListener(
+    "contextmenu",
+    (e) => {
+      if (!e.target.closest(".product-card") && !e.target.closest(".product-row")) {
+        hideItemContextMenu();
+      }
+    },
+    true
+  );
+  el.itemsWrap.addEventListener("scroll", hideItemContextMenu);
+  window.addEventListener("blur", hideItemContextMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideItemContextMenu();
+  });
 }
 
 function setViewMode(mode) {
