@@ -1,11 +1,23 @@
 // ---------- Constants ----------
 
-const EMOJI_OPTIONS = ["✦", "🛒", "👟", "🏡", "💻", "🎧", "📚", "🎁", "🧴", "🪴", "🐾", "✈️"];
+const EMOJI_OPTIONS = [
+  "✦", "🛒", "👟", "🏡", "💻", "🎧", "📚", "🎁", "🧴", "🪴", "🐾", "✈️",
+  "👗", "👜", "💄", "⌚", "🕶️", "💍", "🧢", "🥾", "🎮", "📱", "🖥️", "📷",
+  "🎨", "🎵", "🏋️", "⚽", "🚲", "🚗", "🍳", "🍿", "☕", "🍷", "🌱", "🧸",
+  "🛠️", "🧦", "🛋️", "💡", "🎓", "🏕️", "🐶", "🐱", "🎯", "💎", "🧁", "🔥"
+];
+
+const THEMES = [
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
+  { id: "sepia", label: "Sepia" }
+];
 
 const STORAGE_KEYS = {
   lists: "shoply_lists",
   activeList: "shoply_active_list",
-  viewMode: "shoply_view_mode"
+  viewMode: "shoply_view_mode",
+  theme: "shoply_theme"
 };
 
 // ---------- State ----------
@@ -15,8 +27,12 @@ let state = {
   activeListId: null,
   viewMode: "icon",
   currentTab: null,
-  selectedEmoji: EMOJI_OPTIONS[0]
+  selectedEmoji: EMOJI_OPTIONS[0],
+  theme: "light"
 };
+
+let dragTabIndex = null;
+let manageDragIndex = null;
 
 // ---------- Elements ----------
 
@@ -42,7 +58,15 @@ const el = {
   emptyState: document.getElementById("emptyState"),
   itemsGrid: document.getElementById("itemsGrid"),
   itemsList: document.getElementById("itemsList"),
-  settingsToggle: document.getElementById("settingsToggle")
+  settingsToggle: document.getElementById("settingsToggle"),
+  settingsOverlay: document.getElementById("settingsOverlay"),
+  settingsClose: document.getElementById("settingsClose"),
+  themeRow: document.getElementById("themeRow"),
+  manageLists: document.getElementById("manageLists"),
+  downloadDataBtn: document.getElementById("downloadDataBtn"),
+  importDataBtn: document.getElementById("importDataBtn"),
+  importFileInput: document.getElementById("importFileInput"),
+  importStatus: document.getElementById("importStatus")
 };
 
 // ---------- Init ----------
@@ -53,7 +77,8 @@ async function init() {
   const stored = await chrome.storage.local.get([
     STORAGE_KEYS.lists,
     STORAGE_KEYS.activeList,
-    STORAGE_KEYS.viewMode
+    STORAGE_KEYS.viewMode,
+    STORAGE_KEYS.theme
   ]);
 
   state.lists = stored[STORAGE_KEYS.lists] || [];
@@ -70,11 +95,15 @@ async function init() {
       : state.lists[0].id;
 
   state.viewMode = stored[STORAGE_KEYS.viewMode] || "icon";
+  state.theme = stored[STORAGE_KEYS.theme] || "light";
+  applyTheme(state.theme);
 
   buildEmojiRow();
   renderTabs();
   renderToolbar();
   renderItems();
+  renderThemeRow();
+  renderManageLists();
   await persist();
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -99,7 +128,8 @@ async function persist() {
   await chrome.storage.local.set({
     [STORAGE_KEYS.lists]: state.lists,
     [STORAGE_KEYS.activeList]: state.activeListId,
-    [STORAGE_KEYS.viewMode]: state.viewMode
+    [STORAGE_KEYS.viewMode]: state.viewMode,
+    [STORAGE_KEYS.theme]: state.theme
   });
 }
 
@@ -290,6 +320,420 @@ function renderTabs() {
   addChip.title = "New list";
   addChip.addEventListener("click", toggleNewListForm);
   el.listTabs.appendChild(addChip);
+}
+
+// ---------- Tabs horizontal scrolling ----------
+// Converts vertical mouse-wheel scroll into horizontal scroll, and allows
+// click-and-drag scrolling, so the list tabs can be scrolled with any input
+// device (not just a trackpad's native two-finger horizontal swipe).
+
+function wireTabsScrolling() {
+  el.listTabs.addEventListener(
+    "wheel",
+    (e) => {
+      if (el.listTabs.scrollWidth <= el.listTabs.clientWidth) return;
+      const delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      if (delta === 0) return;
+      e.preventDefault();
+      el.listTabs.scrollLeft += delta;
+    },
+    { passive: false }
+  );
+
+  let isDragging = false;
+  let dragStartX = 0;
+  let scrollStartX = 0;
+  let moved = false;
+
+  el.listTabs.addEventListener("mousedown", (e) => {
+    isDragging = true;
+    moved = false;
+    dragStartX = e.pageX;
+    scrollStartX = el.listTabs.scrollLeft;
+    el.listTabs.classList.add("dragging");
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+    const dx = e.pageX - dragStartX;
+    if (Math.abs(dx) > 4) moved = true;
+    el.listTabs.scrollLeft = scrollStartX - dx;
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (!isDragging) return;
+    isDragging = false;
+    el.listTabs.classList.remove("dragging");
+  });
+
+  // Suppress the tab-click that would otherwise fire right after a drag.
+  el.listTabs.addEventListener(
+    "click",
+    (e) => {
+      if (moved) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    },
+    true
+  );
+}
+
+// ---------- Theme ----------
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+}
+
+function renderThemeRow() {
+  el.themeRow.innerHTML = "";
+  THEMES.forEach((theme) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "theme-swatch" + (state.theme === theme.id ? " active" : "");
+    btn.innerHTML = `<span class="theme-swatch-dot" data-swatch="${theme.id}"></span><span>${theme.label}</span>`;
+    btn.addEventListener("click", async () => {
+      state.theme = theme.id;
+      applyTheme(theme.id);
+      await persist();
+      renderThemeRow();
+    });
+    el.themeRow.appendChild(btn);
+  });
+}
+
+// Give each swatch dot its own preview colors regardless of the currently
+// active theme, by painting them directly rather than relying on inherited
+// CSS variables (which only reflect the *active* theme).
+function paintThemeSwatchPreviews() {
+  const previews = {
+    light: { bg: "#FFFFFF", ring: "#16171B" },
+    dark: { bg: "#1B1C1F", ring: "#F1F0EA" },
+    sepia: { bg: "#FBF3E4", ring: "#2C241C" }
+  };
+  el.themeRow.querySelectorAll(".theme-swatch-dot").forEach((dot) => {
+    const id = dot.getAttribute("data-swatch");
+    const preview = previews[id];
+    if (!preview) return;
+    dot.style.background = preview.bg;
+    dot.style.boxShadow = `inset 0 0 0 3px ${preview.bg}`;
+    dot.style.borderColor = preview.ring;
+  });
+}
+
+// ---------- Settings panel ----------
+
+function openSettingsPanel() {
+  renderThemeRow();
+  paintThemeSwatchPreviews();
+  renderManageLists();
+  el.settingsOverlay.classList.remove("hidden");
+}
+
+function closeSettingsPanel() {
+  el.settingsOverlay.classList.add("hidden");
+}
+
+// ---------- Manage lists (reorder / rename / delete) ----------
+
+function renderManageLists() {
+  el.manageLists.innerHTML = "";
+  state.lists.forEach((list, index) => {
+    el.manageLists.appendChild(buildManageRow(list, index));
+  });
+}
+
+function buildManageRow(list, index) {
+  const row = document.createElement("div");
+  row.className = "manage-row";
+  row.draggable = true;
+  row.dataset.index = String(index);
+
+  const handle = document.createElement("span");
+  handle.className = "manage-drag-handle";
+  handle.textContent = "⠿";
+  handle.title = "Drag to reorder";
+  row.appendChild(handle);
+
+  const emojiBtn = document.createElement("button");
+  emojiBtn.type = "button";
+  emojiBtn.className = "manage-emoji-btn";
+  emojiBtn.textContent = list.emoji;
+  emojiBtn.title = "Change emoji";
+  emojiBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleEmojiPicker(row, list);
+  });
+  row.appendChild(emojiBtn);
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "manage-name-input";
+  nameInput.value = list.name;
+  nameInput.maxLength = 40;
+  nameInput.addEventListener("change", async () => {
+    const trimmed = nameInput.value.trim();
+    list.name = trimmed || list.name;
+    nameInput.value = list.name;
+    await persist();
+    renderTabs();
+    renderToolbar();
+    populateAddSelect();
+  });
+  row.appendChild(nameInput);
+
+  const count = document.createElement("span");
+  count.className = "manage-count";
+  count.textContent = list.items.length;
+  row.appendChild(count);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "manage-delete-btn";
+  deleteBtn.textContent = "✕";
+  deleteBtn.title = "Delete list";
+  deleteBtn.disabled = state.lists.length <= 1;
+  deleteBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteListById(list.id);
+  });
+  row.appendChild(deleteBtn);
+
+  // Drag & drop reordering
+  row.addEventListener("dragstart", (e) => {
+    manageDragIndex = index;
+    row.classList.add("dragging-row");
+    e.dataTransfer.effectAllowed = "move";
+  });
+  row.addEventListener("dragend", () => {
+    row.classList.remove("dragging-row");
+    [...el.manageLists.children].forEach((c) => c.classList.remove("drag-over"));
+  });
+  row.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (manageDragIndex === null || manageDragIndex === index) return;
+    row.classList.add("drag-over");
+  });
+  row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+  row.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    row.classList.remove("drag-over");
+    if (manageDragIndex === null || manageDragIndex === index) return;
+    const [moved] = state.lists.splice(manageDragIndex, 1);
+    state.lists.splice(index, 0, moved);
+    manageDragIndex = null;
+    await persist();
+    renderManageLists();
+    renderTabs();
+    populateAddSelect();
+  });
+
+  return row;
+}
+
+function toggleEmojiPicker(row, list) {
+  const existing = row.nextElementSibling;
+  if (existing && existing.classList.contains("emoji-picker-popover")) {
+    existing.remove();
+    return;
+  }
+  [...el.manageLists.querySelectorAll(".emoji-picker-popover")].forEach((p) => p.remove());
+
+  const popover = document.createElement("div");
+  popover.className = "emoji-picker-popover";
+  EMOJI_OPTIONS.forEach((emoji) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "emoji-opt" + (emoji === list.emoji ? " selected" : "");
+    btn.textContent = emoji;
+    btn.addEventListener("click", async () => {
+      list.emoji = emoji;
+      await persist();
+      renderManageLists();
+      renderTabs();
+      renderToolbar();
+      populateAddSelect();
+    });
+    popover.appendChild(btn);
+  });
+  row.after(popover);
+}
+
+async function deleteListById(listId) {
+  if (state.lists.length <= 1) return;
+  const list = state.lists.find((l) => l.id === listId);
+  if (!list) return;
+  const ok = confirm(`Delete "${list.name}" and everything in it?`);
+  if (!ok) return;
+  state.lists = state.lists.filter((l) => l.id !== listId);
+  if (state.activeListId === listId) {
+    state.activeListId = state.lists[0].id;
+  }
+  await persist();
+  renderManageLists();
+  renderTabs();
+  renderToolbar();
+  renderItems();
+  populateAddSelect();
+}
+
+// ---------- Export / import data ----------
+
+function buildExportText() {
+  const lines = [];
+  lines.push("SHOPLY DATA EXPORT");
+  lines.push(`Exported: ${new Date().toLocaleString()}`);
+  lines.push("=".repeat(40));
+  lines.push("");
+
+  state.lists.forEach((list) => {
+    lines.push("=== LIST START ===");
+    lines.push(`Name: ${list.name}`);
+    lines.push(`Emoji: ${list.emoji}`);
+    lines.push(`Items: ${list.items.length}`);
+    lines.push("");
+    list.items.forEach((item, idx) => {
+      lines.push(`${idx + 1}. ${item.name}`);
+      lines.push(`   Price: ${item.price || "—"}`);
+      lines.push(`   URL: ${item.url}`);
+      lines.push("");
+    });
+    lines.push("=== LIST END ===");
+    lines.push("");
+  });
+
+  return lines.join("\n");
+}
+
+function downloadData() {
+  const text = buildExportText();
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `shoply-export-${dateStr}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function parseImportText(text) {
+  const lines = text.split(/\r?\n/);
+  const parsedLists = [];
+  let current = null;
+  let currentItem = null;
+
+  const flushItem = () => {
+    if (current && currentItem && currentItem.name) {
+      current.items.push(currentItem);
+    }
+    currentItem = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (line === "=== LIST START ===") {
+      current = { name: "", emoji: "✦", items: [] };
+      continue;
+    }
+    if (line === "=== LIST END ===") {
+      flushItem();
+      if (current && current.name && current.items.length >= 0) {
+        parsedLists.push(current);
+      }
+      current = null;
+      continue;
+    }
+    if (!current) continue;
+
+    if (line.startsWith("Name:")) {
+      current.name = line.slice(5).trim();
+      continue;
+    }
+    if (line.startsWith("Emoji:")) {
+      current.emoji = line.slice(6).trim() || "✦";
+      continue;
+    }
+    if (line.startsWith("Items:")) continue;
+
+    const itemMatch = line.match(/^(\d+)\.\s+(.*)$/);
+    if (itemMatch) {
+      flushItem();
+      currentItem = {
+        id: crypto.randomUUID(),
+        name: itemMatch[2].trim(),
+        price: "",
+        image: "",
+        url: "",
+        domain: "",
+        addedAt: Date.now()
+      };
+      continue;
+    }
+    if (currentItem && line.startsWith("Price:")) {
+      const price = line.slice(6).trim();
+      currentItem.price = price === "—" ? "" : price;
+      continue;
+    }
+    if (currentItem && line.startsWith("URL:")) {
+      currentItem.url = line.slice(4).trim();
+      try {
+        currentItem.domain = new URL(currentItem.url).hostname.replace(/^www\./, "");
+      } catch {
+        currentItem.domain = "";
+      }
+      continue;
+    }
+  }
+
+  return parsedLists.filter((l) => l.name);
+}
+
+async function importDataFromText(text) {
+  const parsedLists = parseImportText(text);
+  if (parsedLists.length === 0) {
+    setImportStatus("Couldn't find any Shoply lists in that file.", true);
+    return;
+  }
+
+  let addedLists = 0;
+  let addedItems = 0;
+
+  parsedLists.forEach((parsed) => {
+    let target = state.lists.find((l) => l.name.toLowerCase() === parsed.name.toLowerCase());
+    if (!target) {
+      target = makeList(parsed.name, parsed.emoji || "✦");
+      state.lists.push(target);
+      addedLists++;
+    }
+    parsed.items.forEach((item) => {
+      const exists = item.url && target.items.some((it) => it.url === item.url);
+      if (!exists) {
+        target.items.push(item);
+        addedItems++;
+      }
+    });
+  });
+
+  await persist();
+  renderTabs();
+  renderToolbar();
+  renderItems();
+  renderManageLists();
+  populateAddSelect();
+  setImportStatus(
+    `Imported ${addedItems} item${addedItems === 1 ? "" : "s"} across ${parsedLists.length} list${parsedLists.length === 1 ? "" : "s"}` +
+      (addedLists ? ` (${addedLists} new).` : "."),
+    false
+  );
+}
+
+function setImportStatus(text, isError) {
+  el.importStatus.textContent = text;
+  el.importStatus.style.color = isError ? "#C4432B" : "";
 }
 
 // ---------- New list form ----------
@@ -515,7 +959,28 @@ function wireEvents() {
   el.modeIconBtn.addEventListener("click", () => setViewMode("icon"));
   el.modeLinkBtn.addEventListener("click", () => setViewMode("link"));
 
-  el.settingsToggle.addEventListener("click", toggleNewListForm);
+  el.settingsToggle.addEventListener("click", openSettingsPanel);
+  el.settingsClose.addEventListener("click", closeSettingsPanel);
+  el.settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === el.settingsOverlay) closeSettingsPanel();
+  });
+
+  el.downloadDataBtn.addEventListener("click", downloadData);
+  el.importDataBtn.addEventListener("click", () => el.importFileInput.click());
+  el.importFileInput.addEventListener("change", async () => {
+    const file = el.importFileInput.files && el.importFileInput.files[0];
+    el.importFileInput.value = "";
+    if (!file) return;
+    setImportStatus("Importing…", false);
+    try {
+      const text = await file.text();
+      await importDataFromText(text);
+    } catch (err) {
+      setImportStatus("Couldn't read that file.", true);
+    }
+  });
+
+  wireTabsScrolling();
 }
 
 function setViewMode(mode) {
